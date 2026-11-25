@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Folium API — Revisión de código</title>
+<style>
+  :root { --ink:#20242a; --muted:#5f6b78; --line:#dde2e8; --bg:#f6f8fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:40px 20px; background:#fff; color:var(--ink); font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  main { max-width:880px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin:0 0 28px; }
+  h2 { font-size:19px; margin:40px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  h3 { font-size:16px; margin:0 0 8px; }
+  p { margin:8px 0; }
+  code { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font:13px/1.5 Consolas,"SFMono-Regular",Menlo,monospace; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:12px 14px; overflow-x:auto; font:13px/1.55 Consolas,"SFMono-Regular",Menlo,monospace; margin:10px 0; }
+  pre code { background:none; border:0; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--bg); font-weight:600; }
+  .finding { border:1px solid var(--line); border-left:4px solid var(--line); border-radius:6px; padding:16px 18px; margin:16px 0; }
+  .p1 { border-left-color:#c0392b; }
+  .p2 { border-left-color:#d68910; }
+  .p3 { border-left-color:#2e86c1; }
+  .tag { display:inline-block; font-size:11.5px; font-weight:600; letter-spacing:.3px; padding:2px 7px; border-radius:3px; margin-right:6px; vertical-align:1px; }
+  .tag.sev1 { background:#fdecea; color:#922b21; }
+  .tag.sev2 { background:#fdf2e3; color:#9c640c; }
+  .tag.sev3 { background:#eaf2fb; color:#1a5276; }
+  .tag.meta { background:#eef1f4; color:#495560; font-weight:500; }
+  .where { color:var(--muted); font-size:13px; margin:2px 0 10px; }
+  ul { margin:8px 0; padding-left:22px; }
+  li { margin:4px 0; }
+  .note { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:12px 14px; margin:14px 0; font-size:14px; }
+  .why { background:#fbfcfd; border-left:3px solid #cfd8e3; padding:8px 12px; margin:10px 0; border-radius:4px; }
+  footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Folium API — Revisión de código</h1>
+<p class="sub">Revisión estática del backend (Django + DRF) y ejecución de la suite de pruebas. Fecha: 24/11/2026.</p>
+
+<div class="note">
+<strong>Alcance.</strong> Lectura completa de <code>folium/</code> y <code>folium_api/</code> (views, serializers, modelos, permisos, settings, urls, billing, importer, media, comandos) y ejecución de <code>python manage.py test folium_api</code>: <strong>70 pruebas OK</strong>, con una advertencia de paginación descrita abajo. No es un pentest ni una auditoría de infraestructura: los hallazgos son verificables por inspección del código y tienen, en su mayoría, correcciones de bajo riesgo. Cada hallazgo incluye una explicación simple de por qué importa, pensada para perfiles Junior/Trainee.
+</div>
+
+<h2>Resumen</h2>
+<table>
+  <tr><th>#</th><th>Hallazgo</th><th>Severidad</th><th>Esfuerzo</th></tr>
+  <tr><td>1</td><td>Escalada de privilegios en la gestión de usuarios (rol y contraseña editables por bibliotecarios)</td><td>Alta</td><td>Bajo</td></tr>
+  <tr><td>2</td><td>Activación de suscripciones sin pago cuando MercadoPago no está configurado</td><td>Alta (condicional)</td><td>Bajo</td></tr>
+  <tr><td>3</td><td>Validadores de contraseña configurados pero no aplicados en registro/alta de usuarios</td><td>Media</td><td>Bajo</td></tr>
+  <tr><td>4</td><td><code>/items/</code> expone inventario completo y ubicaciones a cualquier usuario autenticado</td><td>Media</td><td>Bajo</td></tr>
+  <tr><td>5</td><td>Regla de estados de ejemplares (FSM) evadible vía API: <code>clean()</code> nunca se ejecuta</td><td>Media</td><td>Bajo</td></tr>
+  <tr><td>6</td><td>HTTP 500 en filtros con valores no numéricos (<code>?year=</code>, <code>?book=</code>)</td><td>Media</td><td>Bajo</td></tr>
+  <tr><td>7</td><td>Credenciales semilla conocidas y posibilidad de cargarlas en producción</td><td>Media (condicional)</td><td>Bajo</td></tr>
+  <tr><td>8</td><td>Los mensajes de error 401 distinguen el motivo exacto del fallo de autenticación</td><td>Baja</td><td>Bajo</td></tr>
+  <tr><td>9</td><td><code>POST /api/v1/token</code> sin barra final responde 500 en lugar de un error consistente</td><td>Baja</td><td>Bajo</td></tr>
+  <tr><td>10</td><td>Paginación sin orden explícito en el catálogo (warning en la suite)</td><td>Baja</td><td>Bajo</td></tr>
+  <tr><td>11</td><td>N+1 en serializers de libros (2–3 consultas extra por libro en listados)</td><td>Baja</td><td>Medio</td></tr>
+  <tr><td>12</td><td><code>MAILERS</code> no es una directiva de Django: configuración de email muerta</td><td>Baja</td><td>Muy bajo</td></tr>
+  <tr><td>13</td><td>Endurecimiento de producción pendiente (BasicAuth activo, sin flags HTTPS/cookies)</td><td>Baja</td><td>Bajo</td></tr>
+  <tr><td>14</td><td>Documentación (README) desalineada del comportamiento real</td><td>Baja</td><td>Muy bajo</td></tr>
+  <tr><td>15</td><td>Préstamo sin bloqueo de fila: dos requests concurrentes pueden prestar el mismo ejemplar</td><td>Baja</td><td>Medio</td></tr>
+  <tr><td>16</td><td>Subida del importador sin límite de tamaño y XLSX sin tope de descompresión</td><td>Baja</td><td>Bajo</td></tr>
+  <tr><td>17</td><td>Menores: duplicado de favoritos devuelve 201, import implícito de <code>re</code> vía <code>import *</code>, warnings W042</td><td>Informativa</td><td>Variable</td></tr>
+</table>
+
+<h2>Hallazgos</h2>
+
+<div class="finding p1">
+<h3><span class="tag sev1">Alta</span><span class="tag meta">Seguridad</span>1. Escalada de privilegios en <code>UserViewSet</code></h3>
+<p class="where">folium_api/serializers.py:187-255 · folium_api/views.py:700-786</p>
+<p><code>UserSerializer</code> declara <code>rol</code> y <code>password</code> como campos escribibles, y <code>UserViewSet</code> solo exige <code>IsLibrarianOrAdminUser</code>. En consecuencia, una cuenta con rol <code>LIBRARIAN</code> puede:</p>
+<ul>
+  <li><code>PATCH /api/v1/user/{id}/ {"rol": "ADMIN"}</code> sobre sí misma o sobre otro usuario: se autopromueve a administrador.</li>
+  <li><code>PATCH</code> con <code>password</code> sobre la cuenta de un administrador y tomar control total de la misma.</li>
+</ul>
+<p class="why"><strong>Por qué importa.</strong> En un sistema con roles, la regla base es que nadie puede otorgarse más permisos de los que ya tiene. Un bibliotecario está pensado para tareas operativas; hoy puede convertirse en administrador o apropiarse de la cuenta del admin. En un despliegue real, eso equivale a entregar el control total del sistema a cualquier cuenta de personal.</p>
+<p><strong>Corrección sugerida.</strong> Restringir <code>rol</code> a administradores y limitar la edición de cuentas con privilegios:</p>
+<pre><code># serializers.py · UserSerializer
+def validate_rol(self, value):
+    actor = self.context["request"].user
+    if value == User.Rol.ADMIN and not (
+        actor.is_superuser or actor.rol == User.Rol.ADMIN
+    ):
+        raise serializers.ValidationError(
+            "Solo un administrador puede asignar el rol ADMIN."
+        )
+    return value
+
+def update(self, instance, validated_data):
+    actor = self.context["request"].user
+    if "password" in validated_data and not (
+        actor.is_superuser or actor.rol == User.Rol.ADMIN or actor.pk == instance.pk
+    ):
+        raise serializers.ValidationError(
+            {"password": "No puedes cambiar la contraseña de otro usuario."}
+        )
+    return super().update(instance, validated_data)</code></pre>
+<p>Adicional: en <code>UserViewSet.get_queryset()</code>, excluir cuentas <code>ADMIN</code>/superusuario cuando el actor no sea administrador, para que ni siquiera puedan leerlas.</p>
+<p><span class="tag meta">Riesgo de regresión</span> Bajo. Solo bloquea operaciones que hoy deberían estar reservadas al administrador.</p>
+</div>
+
+<div class="finding p1">
+<h3><span class="tag sev1">Alta</span><span class="tag meta">Pagos</span>2. Suscripciones activables sin pago si MercadoPago no está configurado</h3>
+<p class="where">folium_api/mercadopago_service.py:503-516 · folium_api/billing_views.py:276-311, 351-352</p>
+<p>Cadena del problema:</p>
+<ul>
+  <li>Si falta <code>MP_WEBHOOK_SECRET</code>, el webhook omite la validación de firma y registra el evento como válido (<code>billing_views.py:280, 290</code>).</li>
+  <li>Si falta <code>MERCADOPAGO_ACCESS_TOKEN</code>, <code>fetch_payment_details()</code> devuelve <code>{"status": "approved", "simulated": true}</code> sin consultar a MercadoPago.</li>
+  <li>El webhook activa la suscripción cuando el estado es <code>approved</code>. Un tercero puede invocarlo con <code>?external_reference=</code> conocido y activar un plan sin pagar.</li>
+</ul>
+<p class="why"><strong>Por qué importa.</strong> El webhook es el punto donde el backend decide si un pago ocurrió. Si acepta eventos sin verificar quién los envía, y además el modo simulado responde "aprobado" sin existir un pago real, cualquiera puede activar un plan sin pagar. En un producto de suscripciones eso es pérdida directa de ingresos y de confianza.</p>
+<p><strong>Corrección sugerida.</strong> No simular fuera de desarrollo y nunca activar con pagos simulados:</p>
+<pre><code># mercadopago_service.py
+def fetch_payment_details(self, payment_id: str) -> dict:
+    if not self.is_configured:
+        if settings.DEBUG:
+            return {"id": payment_id, "status": "approved",
+                    "status_detail": "simulated", "simulated": True}
+        raise MercadoPagoServiceError("MercadoPago no está configurado en este entorno.")
+
+# billing_views.py (antes de activate_period)
+if payment_details.get("simulated"):
+    return Response({"detail": "Pago simulado: no se activa la suscripción."},
+                    status=status.HTTP_400_BAD_REQUEST)</code></pre>
+<p>Si el entorno expuesto ya tuvo <code>DEBUG=True</code> con este código, revisar suscripciones activas originadas en pagos con <code>simulated=true</code>.</p>
+</div>
+
+<div class="finding p1">
+<h3><span class="tag sev1">Media</span><span class="tag meta">Autenticación</span>3. Política de contraseñas configurada pero no aplicada</h3>
+<p class="where">folium/settings.py:142-155 · folium_api/serializers.py:265-273, 318-327</p>
+<p><code>AUTH_PASSWORD_VALIDATORS</code> (longitud mínima real, contraseñas comunes, numéricas) existe, pero <code>UserRegisterSerializer</code> y <code>UserSerializer</code> solo imponen <code>min_length=8</code>. Registros como <code>12345678</code> o <code>password</code> son aceptados, contradiciendo la configuración. Es la vía natural de entrada de cuentas débiles.</p>
+<p class="why"><strong>Por qué importa.</strong> La política de contraseñas es una barrera que se define una vez y debe aplicarse en todos los lugares donde se crea o cambia una contraseña. Si está configurada pero no se usa, da una falsa sensación de seguridad y deja pasar cuentas fáciles de adivinar, que son el primer objetivo de un ataque de fuerza bruta.</p>
+<pre><code># en ambos serializers
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+def validate_password(self, value):
+    try:
+        validate_password(value)
+    except DjangoValidationError as error:
+        raise serializers.ValidationError(error.messages) from error
+    return value</code></pre>
+<p><span class="tag meta">Riesgo de regresión</span> Bajo. Puede exigir ajustar contraseñas usadas en demos o seeds.</p>
+</div>
+
+<div class="finding p2">
+<h3><span class="tag sev2">Media</span><span class="tag meta">Autorización / datos</span>4. <code>/api/v1/items/</code> expone el inventario a cualquier usuario autenticado</h3>
+<p class="where">folium_api/views.py:94 · README §7 "Ejemplares Físicos"</p>
+<p><code>ItemViewSet</code> usa <code>IsLibrarianOrReadOnly</code>, lo que permite <code>GET</code> a cualquier usuario con sesión (lectores incluidos): códigos de inventario y ubicaciones físicas quedan visibles. El README documenta ese endpoint como exclusivo de staff, por lo que código y documentación no coinciden.</p>
+<p class="why"><strong>Por qué importa.</strong> El inventario no es información pública: revela qué ejemplares existen, cuántos hay y dónde están físicamente. Un lector no necesita esos datos para usar el catálogo. Exponerlos amplía la superficie de ataque y contradice la regla que el propio equipo documentó, lo que además vuelve impredecible el modelo de permisos.</p>
+<p><strong>Corrección sugerida (si el portal lector no consume <code>/items/</code>):</strong></p>
+<pre><code>class ItemViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsLibrarianOrAdminUser]  # antes: IsLibrarianOrReadOnly</code></pre>
+<p>Antes de aplicarlo, verificar en el frontend que el catálogo de lectores use <code>/book/</code> y no <code>/items/</code>. Si <code>/items/</code> se usa para mostrar disponibilidad pública, mantener el permiso y corregir el README.</p>
+</div>
+
+<div class="finding p2">
+<h3><span class="tag sev2">Media</span><span class="tag meta">Integridad</span>5. La regla de estados de ejemplares no se aplica vía API</h3>
+<p class="where">folium_api/models.py:145-162 · folium_api/serializers.py:399-421</p>
+<p><code>Item.clean()</code> impide pasar de <code>LOST</code>/<code>DAMAGED</code> a <code>AVAILABLE</code> directamente, pero DRF no invoca <code>full_clean()</code> al guardar: <code>ItemSerializer</code> no replica la regla. <code>PATCH /api/v1/items/{id}/ {"status":"AVAILABLE"}</code> sobre un ejemplar perdido o dañado se acepta, saltándose la FSM documentada en el README.</p>
+<p class="why"><strong>Por qué importa.</strong> Una máquina de estados solo sirve si todas las puertas de entrada la respetan. Si la API permite saltearla, un ejemplar marcado como perdido puede "reaparecer" como disponible y volver a prestarse. El inventario deja de ser confiable y los préstamos pasan a basarse en datos falsos.</p>
+<pre><code># ItemSerializer
+def validate_status(self, value):
+    if (self.instance
+            and self.instance.status in {Item.Status.LOST, Item.Status.DAMAGED}
+            and value == Item.Status.AVAILABLE):
+        raise serializers.ValidationError(
+            "Un ejemplar perdido o dañado debe pasar por revisión antes de quedar disponible."
+        )
+    return value</code></pre>
+<p><span class="tag meta">Riesgo de regresión</span> Bajo; los flujos normales (AVAILABLE→LOANED, LOANED→AVAILABLE) no se ven afectados.</p>
+</div>
+
+<div class="finding p2">
+<h3><span class="tag sev2">Media</span><span class="tag meta">Robustez</span>6. Filtros con valores no numéricos devuelven 500</h3>
+<p class="where">folium_api/views.py:375-376 (<code>year</code>) · folium_api/views.py:113-114 (<code>book</code> en items)</p>
+<p><code>qs.filter(publication_year=year)</code> y <code>qs.filter(book_id=book_param)</code> reciben el valor crudo del query string. <code>GET /api/v1/book/?year=abc</code> o <code>GET /api/v1/items/?book=abc</code> producen <code>ValueError</code> y respuesta 500. Los demás filtros numéricos sí validan con <code>isdigit()</code>; estos dos quedaron sin guarda.</p>
+<p class="why"><strong>Por qué importa.</strong> Un 500 significa "el servidor falló", y acá en realidad el problema es un dato mal enviado por el cliente. Un error no controlado ensucia el monitoreo, tapa fallos reales y le devuelve al frontend una respuesta que no puede interpretar. El contrato esperable de una API es 400 para entradas inválidas.</p>
+<pre><code># book
+if year:
+    if not str(year).isdigit():
+        raise ValidationError({"year": "El año debe ser numérico."})
+    qs = qs.filter(publication_year=int(year))
+
+# items
+if book_param:
+    if not str(book_param).isdigit():
+        raise ValidationError({"book": "El identificador de libro debe ser numérico."})
+    qs = qs.filter(book_id=int(book_param))</code></pre>
+</div>
+
+<div class="finding p2">
+<h3><span class="tag sev2">Media</span><span class="tag meta">Operaciones</span>7. Credenciales semilla conocidas</h3>
+<p class="where">folium_api/management/commands/seed_data.py:411, 729 · README §9 paso 5</p>
+<p>El comando crea <code>admin / admin1234</code> (y credenciales equivalentes para bibliotecarios y lectores) e imprime las contraseñas. El auto-seed está protegido por <code>DEBUG=True</code> (<code>apps.py:26</code>), pero el comando manual no tiene esa guarda y el README lo incluye como paso opcional del despliegue en EC2. Si se ejecutó en el servidor, hoy existe una cuenta administradora con contraseña pública en el repositorio.</p>
+<p class="why"><strong>Por qué importa.</strong> Una contraseña que está escrita en el repositorio y en la salida del comando no es un secreto. Si esa cuenta existe en un servidor accesible, cualquier persona puede entrar como administrador con datos que ya conoce. Es una de las formas más comunes de comprometer un sistema en producción.</p>
+<p><strong>Acciones:</strong> si el entorno EC2 está accesible, rotar la contraseña de <code>admin</code> o desactivar la cuenta; quitar o marcar como solo-desarrollo el paso 5 del README; opcionalmente, en <code>seed_data.handle()</code>, abortar si <code>DEBUG=False</code> salvo <code>--force</code>.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Autenticación</span>8. Los errores 401 distinguen el motivo exacto del fallo</h3>
+<p class="where">configuración por defecto de DRF (<code>settings.py:185-189</code>)</p>
+<p>Con <code>JWTAuthentication</code>, las respuestas distinguen entre credenciales ausentes ("Authentication credentials were not provided"), token inválido ("Given token not valid...") y token expirado. Cada mensaje guía a quien esté probando el sistema sobre en qué paso falló.</p>
+<p class="why"><strong>Por qué importa.</strong> Los mensajes de error son información gratuita para un atacante: le permiten saber si la ruta existe, si el problema es el formato del token o su vigencia, y ajustar sus intentos. Un mensaje genérico para el cliente, con el detalle completo en los logs del servidor, elimina esa ventaja sin perder la capacidad de diagnosticar.</p>
+<pre><code># folium_api/exceptions.py
+from rest_framework.views import exception_handler
+from rest_framework.exceptions import NotAuthenticated, AuthenticationFailed
+
+def custom_exception_handler(exc, context):
+    response = exception_handler(exc, context)
+    if response is not None and isinstance(exc, (NotAuthenticated, AuthenticationFailed)):
+        response.data = {"detail": "No autorizado."}
+    return response
+
+# settings.py · REST_FRAMEWORK
+"EXCEPTION_HANDLER": "folium_api.exceptions.custom_exception_handler",</code></pre>
+<p><span class="tag meta">Riesgo de regresión</span> Bajo. El detalle técnico se conserva en los logs.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Robustez</span>9. <code>POST /api/v1/token</code> sin barra final responde 500</h3>
+<p class="where">folium/urls.py:27 · comportamiento de <code>CommonMiddleware</code> con <code>APPEND_SLASH</code></p>
+<p>La ruta existe solo como <code>/api/v1/token/</code>. Cuando llega un POST a <code>/api/v1/token</code>, Django intenta redirigir agregando la barra, pero no puede hacerlo conservando el cuerpo y el método, y lanza <code>RuntimeError</code>, que se traduce en 500. <code>APPEND_SLASH</code> ya está en su valor por defecto (<code>True</code>): este es el comportamiento documentado del framework, no una mala configuración.</p>
+<p class="why"><strong>Por qué importa.</strong> El código de estado le dice al cliente qué pasó, y un 500 indica un fallo del servidor. Acá el servidor está sano y el problema es la forma de la URL. Esos 500 ensucian los paneles de errores, esconden fallos reales y dejan al frontend sin una respuesta clara sobre qué corregir.</p>
+<p><strong>Opciones:</strong> (a) que el cliente use siempre la barra final, que es la convención de DRF y la solución más simple; (b) declarar también la ruta sin barra en <code>urls.py</code>; (c) <code>APPEND_SLASH = False</code> y definir explícitamente ambas formas. Documentar la convención en el README ayuda a que el equipo del frontend no vuelva a chocar con esto.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Estabilidad</span>10. Paginación sin orden explícito en el catálogo</h3>
+<p class="where">folium_api/views.py:352-398 · salida de <code>manage.py test</code></p>
+<p>La suite emite <code>UnorderedObjectListWarning: Pagination may yield inconsistent results with an unordered object_list: Book</code>. <code>BookViewSet.get_queryset()</code> termina en <code>distinct()</code> sin <code>order_by</code>, por lo que un libro puede repetirse u omitirse entre páginas. El resto de los listados ya define un orden.</p>
+<p class="why"><strong>Por qué importa.</strong> La base de datos no garantiza el orden de las filas si no se pide uno explícito. Al paginar, esa falta de orden puede hacer que un mismo libro aparezca dos veces o que otro desaparezca al pasar de página. El usuario percibe un catálogo inconsistente y la suite ya lo está advirtiendo.</p>
+<pre><code>return qs.distinct().order_by("title", "id")</code></pre>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Rendimiento</span>11. N+1 en serializers de libros</h3>
+<p class="where">folium_api/serializers.py:639-651, 721-730, 799-808</p>
+<p><code>get_total_items</code>, <code>get_available_items</code> e <code>get_is_available</code> ejecutan <code>obj.items.filter(...)</code>, que ignora el <code>prefetch_related('items')</code> del queryset e impacta la base por cada libro; <code>get_is_available</code> vuelve a calcular lo mismo. Con 20 libros por página son ~40–60 consultas adicionales. Con el catálogo actual (72 libros) no es un problema, pero es el primer cuello de botella al crecer.</p>
+<p class="why"><strong>Por qué importa.</strong> Cada consulta extra por fila multiplica el trabajo de la base de datos. Con pocos registros no se nota; es el patrón que hace que una API se vuelva lenta justo cuando el catálogo crece o cuando varios usuarios navegan a la vez. Detectar el N+1 temprano es más barato que optimizar después.</p>
+<p><strong>Opción de bajo riesgo:</strong> usar el prefetch en lugar de filtrar de nuevo:</p>
+<pre><code>def get_available_items(self, obj):
+    items = obj.items.all()  # usa el cache del prefetch
+    disponibles = sum(1 for i in items if i.status == Item.Status.AVAILABLE)
+    pendientes = sum(
+        1 for r in obj.reservations.all()
+        if r.status == Reservation.StatusReservation.PENDING and r.item_id is None
+    )
+    return max(0, disponibles - pendientes)</code></pre>
+<p>Requiere incluir <code>reservations</code> en el <code>prefetch_related</code> de <code>BookViewSet</code> (ya está en list/retrieve).</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Configuración</span>12. <code>MAILERS</code> no existe como setting de Django</h3>
+<p class="where">folium/settings.py:217-221</p>
+<p>La configuración de email está escrita como <code>MAILERS = {...}</code>. Django lee <code>EMAIL_BACKEND</code>: el bloque actual no tiene efecto y cualquier envío de correo usará el backend por defecto (SMTP a localhost).</p>
+<p class="why"><strong>Por qué importa.</strong> Una configuración con un nombre inválido no falla de forma visible: simplemente se ignora. El resultado es que el correo nunca sale como se espera y el problema aparece recién cuando hay que notificar a un usuario, normalmente en el peor momento. Los settings que no existen no avisan.</p>
+<pre><code>EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# en producción: smtp.EmailBackend + EMAIL_HOST / EMAIL_PORT / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD</code></pre>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Despliegue</span>13. Endurecimiento de producción pendiente</h3>
+<p class="where">folium/settings.py:185-189, 210-213</p>
+<ul>
+  <li><code>BasicAuthentication</code> está habilitada globalmente: credenciales en base64 en cada request. En producción dejar solo <code>JWTAuthentication</code> y <code>SessionAuthentication</code>.</li>
+  <li>No hay <code>SECURE_SSL_REDIRECT</code>, <code>SESSION_COOKIE_SECURE</code>, <code>CSRF_COOKIE_SECURE</code> ni HSTS. Si el backend se sirve por HTTPS, conviene activarlos solo cuando <code>DEBUG=False</code>.</li>
+  <li><code>SECURE_BROWSER_XSS_FILTER</code> fue eliminado en Django 4.0: es una línea muerta (no rompe nada).</li>
+</ul>
+<p class="why"><strong>Por qué importa.</strong> Las opciones de seguridad de Django están pensadas para activarse según el entorno. En desarrollo conviene la comodidad; en producción, HTTPS obligatorio y cookies protegidas son la diferencia entre una sesión que viaja cifrada y una que puede copiarse en una red pública. BasicAuth, además, expone la contraseña en cada request.</p>
+<pre><code>if not DEBUG:
+    REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] = [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ]
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000</code></pre>
+<p>Verificar que el proxy/balanceador reenvíe <code>X-Forwarded-Proto</code> y configurar <code>SECURE_PROXY_SSL_HEADER</code> antes de activar la redirección, para evitar bucles.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Documentación</span>14. README desalineado con el código</h3>
+<p class="where">README §6, §7, §9</p>
+<ul>
+  <li><code>GET /reviews/</code> figura como público; en código requiere autenticación (<code>views.py:1078</code>).</li>
+  <li><code>GET /items/</code> figura como staff; en código lo lee cualquier usuario autenticado (hallazgo 4).</li>
+  <li>Los precios de los planes del README ($29.900 / $59.900 / $119.900) no coinciden con el catálogo real (<code>mercadopago_service.py:20+</code>: $247.000 / $455.000 / ...).</li>
+</ul>
+<p class="why"><strong>Por qué importa.</strong> La documentación es el contrato que usa el resto del equipo: el frontend, los tests y quien evalúe el proyecto. Si dice algo distinto de lo que hace el código, alguien construye sobre una suposición falsa y el error se descubre tarde, cuando ya hay trabajo encima. Corregir el README es la acción de menor costo de todo el informe.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Concurrencia</span>15. Préstamos sin bloqueo de fila</h3>
+<p class="where">folium_api/serializers.py:856-899 · contraste con folium_api/views.py:947-966</p>
+<p>La creación de reservas usa <code>transaction.atomic()</code> + <code>select_for_update()</code>, pero la de préstamos valida disponibilidad y escribe sin bloqueo. Dos <code>POST /api/v1/loan/</code> simultáneos sobre el mismo ejemplar pueden pasar la validación y crear dos préstamos activos. No hay restricción de base que lo impida.</p>
+<p class="why"><strong>Por qué importa.</strong> Dos clics rápidos, dos pestañas o un reintento del frontend pueden llegar casi al mismo tiempo. Sin bloqueo, ambas peticiones ven el mismo ejemplar como disponible y lo prestan dos veces; el sistema queda con un préstamo imposible de cumplir y el inventario descuadrado. El problema es raro, pero aparece justo cuando hay más actividad.</p>
+<p><strong>Opción mínima</strong> (patrón ya usado en reservas):</p>
+<pre><code>def create(self, validated_data):
+    with transaction.atomic():
+        item = Item.objects.select_for_update().get(pk=validated_data["item"].pk)
+        validated_data["item"] = item
+        # (revalidar item.status == AVAILABLE aquí)
+        loan = super().create(validated_data)
+        item.status = Item.Status.LOANED
+        item.save(update_fields=["status", "updated_at"])
+        # ...</code></pre>
+<p>En desarrollo con SQLite el bloqueo no aplica; el riesgo real aparece con PostgreSQL en producción. Puede quedar como mejora posterior a la entrega.</p>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Baja</span><span class="tag meta">Hardening</span>16. Importador sin límites de tamaño</h3>
+<p class="where">folium_api/importer_views.py:1185-1200, 450-511</p>
+<p>Los endpoints del importador no verifican <code>uploaded_file.size</code>, y <code>parse_xlsx_file</code> descomprime y parsea el XML completo en memoria sin tope: un archivo comprimido pequeño puede inflarse y agotar memoria. El endpoint exige rol bibliotecario/admin (superficie acotada), por lo que es defensa en profundidad, no un hueco abierto.</p>
+<p class="why"><strong>Por qué importa.</strong> Aceptar archivos sin límite permite que un solo request consuma toda la memoria del servidor y lo tumbe. Aunque hoy solo lo use personal de confianza, poner un tope es una defensa barata que también protege contra errores humanos, como subir el archivo equivocado.</p>
+<pre><code>MAX_IMPORT_BYTES = 10 * 1024 * 1024
+if uploaded_file.size > MAX_IMPORT_BYTES:
+    return Response({"detail": "El archivo supera el límite de 10 MB."},
+                    status=status.HTTP_400_BAD_REQUEST)</code></pre>
+</div>
+
+<div class="finding p3">
+<h3><span class="tag sev3">Informativa</span><span class="tag meta">Calidad</span>17. Menores</h3>
+<ul>
+  <li><strong>Favoritos duplicados:</strong> <code>FavoriteSerializer.create</code> usa <code>get_or_create</code> (serializers.py:1099-1101); un duplicado responde 201 como si se hubiera creado. <em>Por qué importa:</em> un 201 sobre algo que ya existía confunde al frontend y hace difícil distinguir éxito de duplicado.</li>
+  <li><strong>Import implícito:</strong> <code>views.py:767</code> usa <code>re.sub</code> pero <code>re</code> llega por <code>from .serializers import *</code>. <em>Por qué importa:</em> funciona por casualidad; un refactor de imports lo rompe en runtime sin ningún aviso previo.</li>
+  <li><strong>Warnings W042 (13):</strong> Django sugiere declarar el tipo de PK. Se silencian sin migraciones con <code>DEFAULT_AUTO_FIELD = "django.db.models.AutoField"</code> (coincide con el esquema actual). <em>Por qué importa:</em> no rompen nada, pero un equipo que se acostumbra a ignorar warnings puede pasar por alto uno que sí importe.</li>
+  <li><strong>Idioma:</strong> <code>LANGUAGE_CODE = "en-us"</code> con mensajes propios en español; <em>Por qué importa:</em> los errores automáticos de Django (validadores, unicidad) saldrán en inglés, generando una experiencia mixta y más consultas de soporte.</li>
+  <li><strong><code>BookViewSet.options</code>:</strong> el nombre de la acción (views.py:462) pisa el manejador HTTP <code>OPTIONS</code> de DRF en ese ViewSet. <em>Por qué importa:</em> usar un nombre que el framework reserva puede cambiar el comportamiento de metadata de forma difícil de rastrear; conviene renombrarla (p. ej. <code>book_options</code> con <code>url_path="options"</code>).</li>
+</ul>
+</div>
+
+<h2>Verificado como correcto</h2>
+<ul>
+  <li>JWT: rotación de refresh tokens con blacklist activa; access de 15 minutos.</li>
+  <li>Permiso por defecto <code>IsAuthenticated</code>; permisos explícitos y consistentes en la mayoría de los ViewSets; propietario forzado en favoritos, reservas y reseñas.</li>
+  <li>Throttling global y específico para login (30/min).</li>
+  <li>Entrega de <code>/media/</code> con validación de path traversal, ETag/304 y cabeceras de caché.</li>
+  <li>Webhook de MercadoPago: HMAC con comparación en tiempo constante y ventana anti-replay de 300 s; montos tomados del catálogo del servidor, nunca del cliente.</li>
+  <li>Soft delete coherente (libros, usuarios, reseñas) y reutilización de ISBN de libros dados de baja.</li>
+  <li>Whitelists de ordenamiento en <code>/loan/</code> y <code>/reservations/</code> (sin inyección por <code>ordering</code>).</li>
+  <li>Suite de pruebas: 70 tests en verde.</li>
+</ul>
+
+<footer>
+  Revisión de código estática + ejecución de la suite. Los números de línea corresponden a este snapshot del repositorio. Prioridad sugerida para la entrega: hallazgos 1, 3, 4, 6 y 14 (todos de bajo riesgo), y verificación inmediata del 7 si el entorno EC2 es público.
+</footer>
+
+</main>
+</body>
+</html>
